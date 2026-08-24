@@ -42,6 +42,10 @@ From the project directory, create the virtual environment using Python 3.12:
 ```powershell
 py -3.12 -m venv .venv
 ```
+If running on Linux terminal:
+```powershell
+python -3.12 -m venv .venv
+```
 
 Activate the virtual environment:
 
