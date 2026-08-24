@@ -51,6 +51,10 @@ Activate the virtual environment:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
+
+#OR
+
+source .venv/bin/activate
 ```
 
 If PowerShell prevents the activation script from running, enable script execution for your current user:
