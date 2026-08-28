@@ -21,6 +21,20 @@ together in one pass: select inputs -> decode -> render -> write.
 
 Find more information about Live Mouse Tracker (LMT) on its [website](https://micecraft.org/lmt/) and [publication](https://www.nature.com/articles/s41551-019-0396-1.epdf?shared_access_token=8wpLBUUytAaGAtXL96vwIdRgN0jAjWel9jnR3ZoTv0MWp3GqbF86Gf14i30j-gtSG2ayVLmU-s57ZbhM2WJjw18inKlRYt31Cg_hLJbPCqlKdjWBImyT1OrH5tewfPqUthmWceoct6RVAL_Vt8H-Og%3D%3D).
 
+## Contents
+
+- [Installation](#installation)
+- [Usage](#usage)
+- [Module: config.py](#module-configpy)
+- [Module: gui_selector.py](#module-gui_selectorpy)
+- [Module: database.py](#module-databasepy)
+- [Module: xml_parser.py](#module-xml_parserpy)
+- [Module: mask_decoder.py](#module-mask_decoderpy)
+- [Module: overlay_renderer.py](#module-overlay_rendererpy)
+- [Module: video_processor.py](#module-video_processorpy)
+- [Module: main.py](#module-mainpy)
+- [Module: posture_label_diagnostic.py](#module-posture_label_diagnosticpy)
+
 ## Installation
 
 ### Windows
