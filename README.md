@@ -8,7 +8,7 @@ frame number.
 
 The pipeline exists because LMT's own live overlay is generated in real
 time, during acquisition, and is not always correct: it reflects whatever
-the tracker detected *at that instant*, not the corrected, offline-processed 
+the tracker detected *at that instant*, not the RFID-corrected, offline-processed 
 result that ends up in the SQLite database afterward. The SQLite database
 is treated as ground truth throughout this pipeline; the raw, overlay-free
 videos are the only thing ever drawn on, and are never modified in place, a
