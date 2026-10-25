@@ -14,18 +14,20 @@ from typing import Dict, Tuple
 # Paths
 # INPUT_VIDEO_DIR is kept for backward compatibility with
 # video_processor.discover_videos(), which globs a single directory. The
-# GUI-driven flow in main.py does NOT use it -- gui_selector.py returns an
-# explicit list of video file paths (which may span multiple folders),
-# and those are passed to video_processor.discover_videos_from_paths()
-# instead. INPUT_VIDEO_DIR is therefore optional now; see validate_config()
-# below, which no longer requires it to exist.
+# flow in main.py does NOT use it -- the GUI (gui_selector.py) or the
+# -v/--videos flag supplies an explicit list of video file paths (which
+# may span multiple folders), and those are passed to
+# video_processor.discover_videos_from_paths() instead. INPUT_VIDEO_DIR
+# is therefore optional now; see validate_config() below, which no longer
+# requires it to exist.
 INPUT_VIDEO_DIR: Path = Path(os.environ.get("LMT_INPUT_DIR", "./input_videos")).resolve()
 DATABASE_PATH: Path = Path(os.environ.get("LMT_DATABASE_PATH", "./tracking.sqlite")).resolve()
 
 # Base directory under which each run creates its own timestamped
-# subfolder (e.g. "./output/2026-07-20_17-34-12/"). main.py's GUI flow
-# reassigns this module attribute to that timestamped subfolder before
-# processing starts -- see main.py's _make_session_output_dir().
+# subfolder (e.g. "./output/2026-07-20_17-34-12/"). main.py reassigns
+# this module attribute before processing starts: either to that
+# timestamped subfolder (see main.py's _make_unique_output_dir()) or to
+# the exact folder given with -o/--output-folder.
 OUTPUT_VIDEO_DIR: Path = Path(os.environ.get("LMT_OUTPUT_DIR", "./output")).resolve()
 
 # Video file naming / frame mapping
@@ -101,6 +103,11 @@ OUTPUT_FPS: float = RAW_VIDEO_FPS
 FPS_MISMATCH_WARN_THRESHOLD: float = 0.02   # 2% -- e.g. 14.7-15.3 fps at nominal 15.0
 FPS_MISMATCH_ERROR_THRESHOLD: float = 0.10  # 10% -- e.g. below 13.5 or above 16.5 fps at nominal 15.0
 
+# Whether process_all_videos() replaces an output video that already
+# exists. False (the default) skips it with a warning instead; main.py
+# sets this from --overwrite.
+OVERWRITE_OUTPUT: bool = False
+
 # GUI file selection
 # Where gui_selector.py persists the last-used database path and last
 # video directory across runs. Stored next to the project code rather
@@ -120,8 +127,8 @@ def validate_config() -> None:
     Sanity-check configuration at startup and fail fast with a clear
     message rather than surfacing a cryptic error deep in video_processor.
 
-    INPUT_VIDEO_DIR is intentionally NOT validated here: the GUI-driven
-    flow (main.py's default) supplies an explicit list of video file
+    INPUT_VIDEO_DIR is intentionally NOT validated here: main.py (GUI or
+    command-line inputs) supplies an explicit list of video file
     paths rather than a directory to glob, so INPUT_VIDEO_DIR may be
     unset or nonexistent and that's fine. It only matters if you call
     video_processor.discover_videos() directly with a folder yourself.

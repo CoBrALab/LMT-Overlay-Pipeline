@@ -244,6 +244,12 @@ def process_single_video(conn: sqlite3.Connection, video: VideoInfo) -> None:
     """
     Stream through a single raw video, rendering overlays from SQLite
     detections and writing the corrected result to video.output_path.
+
+    Frames are written to a temporary "<name>.partial<ext>" file, which is
+    renamed to video.output_path only after the video ends. If the run is
+    interrupted or fails, no file exists at video.output_path, so the
+    skip-existing check in process_all_videos() never mistakes a partial
+    video for a finished one.
     """
     logger.info(
         "Processing %s (start_frame=%d, frames=%d, %dx%d @ %.2ffps) -> %s",
@@ -255,15 +261,17 @@ def process_single_video(conn: sqlite3.Connection, video: VideoInfo) -> None:
     if not cap.isOpened():
         raise VideoProcessingError(f"Could not (re)open video for processing: {video.path}")
 
+    partial_path = video.output_path.with_name(f"{video.output_path.stem}.partial{video.output_path.suffix}")
     fourcc = cv2.VideoWriter_fourcc(*config.OUTPUT_FOURCC)
-    writer = cv2.VideoWriter(str(video.output_path), fourcc, config.OUTPUT_FPS, (video.width, video.height))
+    writer = cv2.VideoWriter(str(partial_path), fourcc, config.OUTPUT_FPS, (video.width, video.height))
     if not writer.isOpened():
         cap.release()
-        raise VideoProcessingError(f"Could not open VideoWriter for: {video.output_path}")
+        raise VideoProcessingError(f"Could not open VideoWriter for: {partial_path}")
 
     local_chunk_size = max(1, config.DB_QUERY_CHUNK_FRAMES // config.FRAME_CONVERSION)
 
     frames_written = 0
+    read_failed = False
     progress = None
     if config.PROGRESS_BAR and tqdm is not None:
         progress = tqdm(total=video.frame_count, desc=video.path.name, unit="frame")
@@ -287,7 +295,8 @@ def process_single_video(conn: sqlite3.Connection, video: VideoInfo) -> None:
                         video.path.name, video.frame_count, local_frame,
                         video.start_frame + local_frame * config.FRAME_CONVERSION,
                     )
-                    return
+                    read_failed = True
+                    break
 
                 global_frame = video.start_frame + local_frame * config.FRAME_CONVERSION
                 detections = detections_by_frame.get(global_frame, [])
@@ -298,12 +307,15 @@ def process_single_video(conn: sqlite3.Connection, video: VideoInfo) -> None:
                 frames_written += 1
                 if progress is not None:
                     progress.update(1)
+            if read_failed:
+                break
     finally:
         cap.release()
         writer.release()
         if progress is not None:
             progress.close()
 
+    partial_path.replace(video.output_path)
     logger.info("Finished %s: wrote %d frames to %s", video.path.name, frames_written, video.output_path)
 
 
@@ -316,6 +328,15 @@ def process_all_videos(conn: sqlite3.Connection, videos: List[VideoInfo]) -> Non
     database.warn_if_unindexed(conn)
 
     for video in videos:
+        # Skipping existing outputs (rather than overwriting) keeps an
+        # exact --output-folder safe to reuse: re-running a batch only
+        # renders the videos that are still missing.
+        if video.output_path.exists() and not config.OVERWRITE_OUTPUT:
+            logger.warning(
+                "Output %s already exists; skipping %s (use --overwrite to replace it).",
+                video.output_path, video.path.name,
+            )
+            continue
         try:
             process_single_video(conn, video)
         except VideoProcessingError as exc:
