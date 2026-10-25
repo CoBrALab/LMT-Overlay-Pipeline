@@ -7,14 +7,21 @@ CLI entrypoint for the LMT overlay pipeline.
 Usage:
     python main.py
     python main.py --output-base-dir /data/results --no-progress --log-level DEBUG
+    python main.py -i tracking.sqlite -v /data/period1/ -o /data/overlays/period1
 
-On startup, this launches two file-picker dialogs (via gui_selector.py):
-first to select the LMT SQLite database, then to select one or more raw
-video files. Selected files may live anywhere on disk, in any folder
-structure -- there is no assumption of a fixed project layout. Each run
-writes its output into a fresh, uniquely timestamped subfolder under
---output-base-dir (default: ./output), so repeated runs never overwrite
-each other's results.
+With -i/--input and -v/--videos, the database and raw videos come from
+the command line and no GUI is shown, so runs can be scripted (e.g. one
+run per tracking period in a shell loop). With neither flag, this
+launches two file-picker dialogs (via gui_selector.py): first to select
+the LMT SQLite database, then to select one or more raw video files.
+Either way, files may live anywhere on disk, in any folder structure --
+there is no assumption of a fixed project layout.
+
+By default each run writes its output into a fresh, uniquely timestamped
+subfolder under --output-base-dir (default: ./output), so repeated runs
+never overwrite each other's results. -o/--output-folder writes into
+exactly the given folder instead; output videos that already exist there
+are skipped unless --overwrite is given.
 """
 
 from __future__ import annotations
@@ -28,15 +35,40 @@ from pathlib import Path
 
 import config
 import database
-import gui_selector
 import video_processor
 
 logger = logging.getLogger(__name__)
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render corrected LMT overlays (from SQLite ground truth) onto raw videos.",)
-    
+    parser = argparse.ArgumentParser(
+        description=(
+            "Render corrected LMT overlays (from SQLite ground truth) onto raw videos. "
+            "Give -i and -v to run without the GUI; give neither to pick files in the GUI."
+        ),
+    )
+
     parser.add_argument(
+        "-i", "--input", type=Path, metavar="DATABASE",
+        help="Path to the LMT SQLite database. Must be given together with -v/--videos.",
+    )
+    parser.add_argument(
+        "-v", "--videos", type=Path, nargs="+", metavar="PATH",
+        help=(
+            "One or more raw video files and/or folders. Folders are searched "
+            f"(non-recursively) for {config.VIDEO_GLOB_PATTERN!r}. "
+            "Must be given together with -i/--input."
+        ),
+    )
+    output_group = parser.add_mutually_exclusive_group()
+    output_group.add_argument(
+        "-o", "--output-folder", type=Path,
+        help=(
+            "Write output videos into exactly this folder (created if needed), "
+            "with no timestamped subfolder. Existing output videos are skipped "
+            "unless --overwrite is given."
+        ),
+    )
+    output_group.add_argument(
         "--output-base-dir",
         type=Path,
         default=config.OUTPUT_VIDEO_DIR,
@@ -47,6 +79,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--overwrite", action="store_true",
+        help="Replace output videos that already exist, instead of skipping them.",
+    )
+    parser.add_argument(
         "--no-progress", action="store_true",
         help="Disable tqdm progress bars (useful for non-interactive/log-file runs).",
     )
@@ -54,7 +90,33 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--log-level", default=config.LOG_LEVEL, choices=("DEBUG", "INFO", "WARNING", "ERROR"),
         help=f"Logging verbosity (default: {config.LOG_LEVEL})",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+
+    if (args.input is None) != (args.videos is None):
+        parser.error("-i/--input and -v/--videos must be given together (or neither, to use the GUI).")
+    return args
+
+
+def _expand_video_paths(paths: list[Path]) -> list[Path]:
+    """
+    Expand any folders in paths into the raw videos they contain
+    (config.VIDEO_GLOB_PATTERN, non-recursive), keeping files as given.
+    Folder support matters because PowerShell does not expand '*.mp4'
+    itself. Missing paths are logged and skipped, like unusable videos.
+    """
+    expanded: list[Path] = []
+    for path in paths:
+        path = path.resolve()
+        if path.is_dir():
+            matches = sorted(path.glob(config.VIDEO_GLOB_PATTERN))
+            if not matches:
+                logger.warning("No videos matched pattern %r under %s", config.VIDEO_GLOB_PATTERN, path)
+            expanded.extend(matches)
+        elif path.exists():
+            expanded.append(path)
+        else:
+            logger.error("Skipping video path that does not exist: %s", path)
+    return expanded
 
 
 def _configure_logging(level_name: str) -> None:
@@ -82,7 +144,7 @@ def _make_unique_output_dir(base_dir: Path, database_path: Path) -> Path:
 
     suffix = 2
     while True:
-        candidate = base_dir / f"{timestamp}_{suffix}"
+        candidate = base_dir / f"{database_name}_{timestamp}_{suffix}"
         if not candidate.exists():
             return candidate
         suffix += 1
@@ -121,22 +183,34 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.no_progress:
         config.PROGRESS_BAR = False
+    config.OVERWRITE_OUTPUT = args.overwrite
 
-    try:
-        database_path, video_paths = gui_selector.select_database_and_videos()
-    except ImportError as exc:
-        logger.error(
-            "Tkinter is not available (%s). On Debian/Ubuntu, install it with: "
-            "sudo apt-get install python3-tk. On other platforms, reinstall "
-            "Python with Tk support enabled.", exc,
-        )
-        return 1
-    except gui_selector.SelectionCancelled as exc:
-        logger.warning("Selection cancelled: %s Nothing was processed.", exc)
-        return 1
+    if args.input is not None:
+        database_path = args.input.resolve()
+        video_paths = _expand_video_paths(args.videos)
+    else:
+        # gui_selector is imported here, not at module level, so a
+        # command-line run never needs Tkinter (e.g. on a headless server).
+        import gui_selector
+
+        try:
+            database_path, video_paths = gui_selector.select_database_and_videos()
+        except ImportError as exc:
+            logger.error(
+                "Tkinter is not available (%s). On Debian/Ubuntu, install it with: "
+                "sudo apt-get install python3-tk. On other platforms, reinstall "
+                "Python with Tk support enabled, or pass -i and -v to run without the GUI.", exc,
+            )
+            return 1
+        except gui_selector.SelectionCancelled as exc:
+            logger.warning("Selection cancelled: %s Nothing was processed.", exc)
+            return 1
 
     config.DATABASE_PATH = database_path
-    config.OUTPUT_VIDEO_DIR = _make_unique_output_dir(args.output_base_dir.resolve(), database_path)
+    if args.output_folder is not None:
+        config.OUTPUT_VIDEO_DIR = args.output_folder.resolve()
+    else:
+        config.OUTPUT_VIDEO_DIR = _make_unique_output_dir(args.output_base_dir.resolve(), database_path)
 
     try:
         config.validate_config()

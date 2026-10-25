@@ -1,10 +1,11 @@
 # LMT Overlay Pipeline Documentation
 
-This README documents a GUI-driven pipeline that takes a Live Mouse Tracker
+This README documents a pipeline that takes a Live Mouse Tracker
 (LMT) SQLite output and a set of raw (no-overlay) video files, and produces
 new videos with **corrected** tracking overlays burned in: per-animal
 segmentation masks, pose markers, posture labels, and the global SQLite
-frame number.
+frame number. You can give the inputs on the command line (for scripted
+batch runs) or select them in a GUI.
 
 The pipeline exists because LMT's own live overlay is generated in real
 time, during acquisition, and is not always correct: it reflects whatever
@@ -113,6 +114,16 @@ The full path will typically look like:
 C:\path\to\LMT_Overlay_Pipeline\.venv\Scripts\python.exe
 ```
 
+### Install dependencies with uv (alternative)
+
+If you use [uv](https://docs.astral.sh/uv/), you do not need the manual
+virtual environment steps above. The project has a `pyproject.toml`, so uv
+creates the environment and installs the dependencies at the first run:
+
+```bash
+uv run python main.py --help
+```
+
 ### Install dependencies
 
 With the virtual environment activated, install the project dependencies:
@@ -181,52 +192,108 @@ The expected Python version is **3.12.x**, and NumPy should be **1.26.x**.
 
 ## Usage
 
+The pipeline has two input modes. Both modes use the same processing.
+
+### Command-line mode (no GUI)
+
+Give the database with `-i` and the raw videos with `-v`:
+
+```bash
+python main.py -i tracking.sqlite -v /data/period1/
+python main.py -i tracking.sqlite -v video_noOverlay_t18024.mp4 video_noOverlay_t25000.mp4
+```
+
+- `-v` accepts video files, folders, or both. The pipeline searches each
+  folder (not its subfolders) for files that match `*_t*.mp4`. Use a folder
+  on Windows, because PowerShell does not expand `*.mp4`.
+- You must give `-i` and `-v` together.
+- This mode does not need Tkinter, so it also runs on a server with no
+  display.
+
+### GUI mode
+
 ```bash
 python main.py
 ```
 
-Running this launches two file-picker dialogs in order:
+If you give neither `-i` nor `-v`, the pipeline opens two file-picker
+dialogs in order:
 
 1. **Select the LMT SQLite database.**
-2. **Select one or more raw video files** (may span multiple folders, any
-   naming convention, as long as the filename ends in `_t<digits>.mp4`).
-   Only `.mp4` is supported; other formats are rejected with a clear error.
+2. **Select one or more raw video files.**
 
-Every video selected is then processed against the selected database, and
-corrected output is written into a freshly created, timestamped folder:
+### Inputs and output
+
+Videos can be in different folders and have any name prefix. The filename
+must end in `_t<digits>.mp4`. Only `.mp4` is supported; the pipeline rejects
+other formats with a clear error.
+
+The pipeline processes every video against the database. By default it
+writes the corrected output into a new folder with a timestamp in its name:
 
 ```
-output/2026-07-20_17-34-12/
+output/tracking_2026-07-20_17-34-12/
     video_t18024.mp4
     video_t25000.mp4
 ```
+
+Use `-o` to write into exactly the folder that you give. This is better for
+scripts, because you know the output path before the run starts. If an
+output video already exists in that folder, the pipeline skips it and logs
+a warning. Thus, when you run the same command again, it makes only the
+videos that are missing. Use `--overwrite` to replace existing videos.
 
 Optional flags:
 
 | Flag | Purpose |
 |---|---|
+| `-i`, `--input PATH` | LMT SQLite database. Use together with `-v`. |
+| `-v`, `--videos PATH [PATH ...]` | Raw video files and/or folders. Use together with `-i`. |
+| `-o`, `--output-folder PATH` | Write output videos into exactly this folder (no timestamp subfolder). Cannot be used with `--output-base-dir`. |
 | `--output-base-dir PATH` | Base folder under which each run's timestamped subfolder is created (default: `./output`). |
+| `--overwrite` | Replace output videos that already exist, instead of skipping them. |
 | `--no-progress` | Disable `tqdm` progress bars (useful for log-file/non-interactive runs). |
 | `--log-level {DEBUG,INFO,WARNING,ERROR}` | Logging verbosity (default: `INFO`). |
+
+### Batch processing (many tracking periods)
+
+Each run processes one database. To process many tracking periods, run the
+pipeline one time for each period. This example runs all periods at the
+same time. It assumes that each `period_*` folder holds one `.sqlite` file
+and its raw videos:
+
+```bash
+mkdir -p /data/exp3/overlays
+for period in /data/exp3/period_*/; do
+  name=$(basename "$period")
+  uv run python main.py -i "$period"/*.sqlite -v "$period" \
+      -o /data/exp3/overlays/"$name" --no-progress \
+      > /data/exp3/overlays/"$name".log 2>&1 &
+done
+wait
+```
+
+This starts all runs at the same time. If you have many periods, use
+`xargs -P N` or GNU `parallel` to limit how many runs occur at the same time.
 
 ## Project layout
 
 | File | Responsibility |
 |---|---|
 | `config.py` | Every tunable constant: paths, colors, alpha, frame-conversion factor, timestamp format. No logic, just values. |
-| `gui_selector.py` | Tkinter file-picker dialogs for the database and videos; persists last-used locations to `settings.json`. |
+| `gui_selector.py` | Tkinter file-picker dialogs for the database and videos (GUI mode only); persists last-used locations to `settings.json`. |
 | `database.py` | The only module that talks to SQLite; opens read-only connections, runs bounded range queries against `DETECTION`. |
 | `xml_parser.py` | Parses the `DATA` XML column of one detection row into structured pose + ROI data. |
 | `mask_decoder.py` | Decodes the `boolMaskData` hex payload inside that XML into a 2D NumPy segmentation mask. |
 | `overlay_renderer.py` | Draws decoded masks, pose markers, posture labels, and the frame number onto a video frame. |
 | `video_processor.py` | Discovers videos (from a folder or an explicit file list), streams through each one frame-by-frame, and writes corrected output. |
-| `main.py` | CLI entrypoint: wires everything above together into one run. |
+| `main.py` | CLI entrypoint: gets inputs from the command line or the GUI, then wires everything above together into one run. |
 
 Dependency direction is strictly one-way, low-level to high-level:
 
 ```
 main.py
- |- gui_selector.py            (get database path + video paths from the user)
+ |- gui_selector.py            (GUI mode only: get database path + video paths from the user)
  |- video_processor.py
      |- database.py            (fetch detection rows for a frame range)
      |- overlay_renderer.py
@@ -253,8 +320,10 @@ video.
 
 | Setting | Meaning |
 |---|---|
-| `DATABASE_PATH`, `OUTPUT_VIDEO_DIR` | Set at runtime by `main.py` from the GUI selection and the computed timestamped output folder, respectively. |
-| `INPUT_VIDEO_DIR`, `VIDEO_GLOB_PATTERN` | Only relevant to `video_processor.discover_videos()` (the folder-glob discovery path), not used by the default GUI flow, which uses `discover_videos_from_paths()` instead. |
+| `DATABASE_PATH`, `OUTPUT_VIDEO_DIR` | Set at runtime by `main.py` from `-i` or the GUI selection, and from `-o` or the computed timestamped output folder, respectively. |
+| `INPUT_VIDEO_DIR` | Only relevant to `video_processor.discover_videos()` (the folder-glob discovery path), not used by `main.py`, which uses `discover_videos_from_paths()` instead. |
+| `VIDEO_GLOB_PATTERN` | Used by `discover_videos()` and by `main.py` to find raw videos in folders given with `-v`. |
+| `OVERWRITE_OUTPUT` | Set by `main.py` from `--overwrite`. When `False`, `process_all_videos()` skips videos whose output file already exists. |
 | `FRAME_CONVERSION` | Ratio between SQLite's frame numbering and raw video fps (default `2`: DB frames run at 30fps-equivalent, video at 15fps). The single most consequential constant in the project, everything else's frame math derives from it. |
 | `MASK_STRICT_SIZE_VALIDATION` | Keep `True` in production; a decompressed mask whose size doesn't match its `ROI` bounds raises rather than silently misaligning. |
 | `ANIMAL_COLORS_BGR`, `MASK_ALPHA`, `DRAW_*` flags | Visual tuning; safe to adjust by eye. |
@@ -264,7 +333,7 @@ video.
 
 ### Key Design Decisions & Assumptions
 - **`INPUT_VIDEO_DIR` is intentionally not validated by `validate_config()`.**
-  The GUI-driven flow supplies an explicit list of video files, not a
+  `main.py` supplies an explicit list of video files, not a
   directory to glob, so this constant may be unset or nonexistent and
   that's fine, it only matters if `discover_videos()` is called directly.
 - **Every other module reads `config.X` at call time, never at import
@@ -292,6 +361,7 @@ video.
 ## Module: `gui_selector.py`
 
 ### Overview
+Used only in GUI mode (when `main.py` gets neither `-i` nor `-v`).
 Presents two native file-picker dialogs, database then videos, and
 persists the last-used locations across runs so repeat sessions don't
 start back at the OS default folder.
@@ -361,7 +431,7 @@ ground-truth database regardless of bugs elsewhere in the codebase.
 
 | Input | Type | Purpose |
 |---|---|---|
-| `config.DATABASE_PATH` | Path | The LMT SQLite database, set by `main.py` from the GUI selection. |
+| `config.DATABASE_PATH` | Path | The LMT SQLite database, set by `main.py` from `-i` or the GUI selection. |
 | `(start_frame, end_frame)` | Integers | Half-open global-frame range to query, per call. |
 
 ### Outputs
@@ -598,7 +668,7 @@ also returns it, for convenient chaining).
 The orchestration layer between raw video files and rendered output.
 Provides two independent **discovery** paths, folder-glob (`discover_videos`,
 for scripted/headless use) and explicit file list (`discover_videos_from_paths`,
-used by the GUI flow), both producing the same `VideoInfo` objects and
+used by `main.py`), both producing the same `VideoInfo` objects and
 sharing the same duplicate-protection logic. **Processing**
 (`process_single_video`) opens each video exactly once, streams through it
 sequentially, and pulls detections from SQLite in bounded chunks aligned to
@@ -633,6 +703,11 @@ that video's own frame range.
 4. **Per-video failure isolation** (`process_all_videos`): a video that
    fails to open, or truncates mid-read, logs an error/warning and the run
    continues to the next video rather than aborting the whole batch.
+   Before processing, a video whose output file already exists is skipped
+   with a warning, unless `config.OVERWRITE_OUTPUT` is `True`.
+   Each video is written to a temporary `<name>.partial.mp4` file and
+   renamed to its final name only when it is complete, so an interrupted
+   run never leaves a file that a later run would skip.
 
 ### Key Design Decisions & Assumptions
 - **Sequential `cap.read()`, never `cap.set(CAP_PROP_POS_FRAMES, ...)`**,
@@ -665,15 +740,16 @@ that video's own frame range.
 - **Configuration files / environment variables**: none directly; reads
   `config.VIDEO_GLOB_PATTERN`, `config.VIDEO_FILENAME_PATTERN`,
   `config.FRAME_CONVERSION`, `config.DB_QUERY_CHUNK_FRAMES`,
-  `config.OUTPUT_FOURCC`, `config.OUTPUT_FPS`, `config.PROGRESS_BAR`, `config.RAW_VIDEO_FPS`, `config.FPS_MISMATCH_WARN_THRESHOLD`, `config.FPS_MISMATCH_ERROR_THRESHOLD`.
+  `config.OUTPUT_FOURCC`, `config.OUTPUT_FPS`, `config.PROGRESS_BAR`, `config.OVERWRITE_OUTPUT`, `config.RAW_VIDEO_FPS`, `config.FPS_MISMATCH_WARN_THRESHOLD`, `config.FPS_MISMATCH_ERROR_THRESHOLD`.
 
 ---
 
 ## Module: `main.py`
 
 ### Overview
-The CLI entrypoint. Parses a small set of optional flags, launches the GUI
-selection flow, computes a unique timestamped output directory, validates
+The CLI entrypoint. Parses a small set of optional flags, gets the inputs
+from `-i`/`-v` or from the GUI selection flow, sets the output directory
+(exact `-o` folder or a unique timestamped one), validates
 configuration, discovers/probes the selected videos, and runs processing,
 with clean, specific exit codes for every failure path.
 
@@ -681,26 +757,32 @@ with clean, specific exit codes for every failure path.
 
 | Input | Type | Purpose |
 |---|---|---|
-| `--output-base-dir`, `--no-progress`, `--log-level` | CLI flags, all optional | See Usage section above. |
+| `-i`, `-v`, `-o`, `--output-base-dir`, `--overwrite`, `--no-progress`, `--log-level` | CLI flags, all optional (`-i` and `-v` must be given together) | See Usage section above. |
 
 ### Outputs
 
 | Output | Type | Purpose |
 |---|---|---|
 | Exit code | `int` | `0` success, `1` error/cancelled/nothing-to-do, `130` interrupted (`Ctrl-C`), matching standard Unix conventions. |
-| `output/<timestamp>/` | Directory | This run's corrected videos. |
+| `output/<database>_<timestamp>/` or the `-o` folder | Directory | This run's corrected videos. |
 
 ### Processing Steps
 1. **Parse arguments, configure logging.**
-2. **Launch the GUI picker** (`gui_selector.select_database_and_videos`);
-   catches `ImportError` (Tkinter unavailable, with an actionable
-   install-command message) and `SelectionCancelled` (user cancelled,
-   logged as a warning, not an error) separately.
-3. **Set `config.DATABASE_PATH`** from the selection, and compute this
-   run's unique output directory (`_make_unique_output_dir`): a
-   timestamped subfolder under `--output-base-dir`, with a numeric suffix
-   appended if that exact folder somehow already exists (guaranteeing
-   output is never silently overwritten).
+2. **Get the inputs.** With `-i`/`-v`, use the database path as given and
+   expand each `-v` folder into its `*_t*.mp4` files
+   (`_expand_video_paths`); paths that do not exist are logged and
+   skipped. Otherwise, **launch the GUI picker**
+   (`gui_selector.select_database_and_videos`); catches `ImportError`
+   (Tkinter unavailable, with an actionable install-command message) and
+   `SelectionCancelled` (user cancelled, logged as a warning, not an
+   error) separately. `gui_selector` is imported only in this branch, so
+   command-line mode never needs Tkinter.
+3. **Set `config.DATABASE_PATH`** from the inputs, and set this run's
+   output directory: the `-o` folder as given, or else a unique
+   timestamped subfolder under `--output-base-dir`
+   (`_make_unique_output_dir`), with a numeric suffix appended if that
+   exact folder somehow already exists. In both cases, existing output
+   videos are never silently overwritten (see `--overwrite`).
 4. **`config.validate_config()`** checks the database exists and creates
    the output directory.
 5. **`video_processor.discover_videos_from_paths()`** probes every selected
@@ -742,10 +824,9 @@ with clean, specific exit codes for every failure path.
   `main.py` itself, though `config.py`'s own env var overrides
   (`LMT_LOG_LEVEL`, etc.) still apply as defaults before CLI flags are
   parsed.
-- **Platform assumptions**: requires Tkinter GUI support (not
-  headless-safe) for its default flow; `video_processor.discover_videos()`
-  remains available for headless/scripted use if called directly instead
-  of through `main.py`.
+- **Platform assumptions**: GUI mode requires Tkinter GUI support (not
+  headless-safe). Command-line mode (`-i`/`-v`) does not import Tkinter
+  and is headless-safe.
 
 ---
 
@@ -808,7 +889,7 @@ opens the same read-only connection as the rest of the pipeline, via
 | `numpy` | `mask_decoder.py`, `overlay_renderer.py` | Yes |
 | `opencv-python` (`cv2`) | `overlay_renderer.py`, `video_processor.py` | Yes |
 | `tqdm` | `video_processor.py` | Optional (degrades to no progress bar) |
-| `tkinter` | `gui_selector.py` | Yes, for the default GUI flow (system package on Linux) |
+| `tkinter` | `gui_selector.py` | Only for GUI mode (system package on Linux) |
 
 No other third-party dependencies anywhere in the project. Standard-library
 modules used across the codebase: `sqlite3`, `zlib`, `xml.etree.ElementTree`,
